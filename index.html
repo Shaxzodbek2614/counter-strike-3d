@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="uz">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Counter-Strike 3D — Team Deathmatch FPS web o'yini. Brauzerda o'ynang!">
+    <title>CS:3D — Counter-Strike Deathmatch</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=Orbitron:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <!-- Main Menu Screen -->
+    <div id="menu-screen" class="screen active">
+        <div class="menu-bg"></div>
+        <div class="menu-overlay"></div>
+        <div class="menu-content">
+            <div class="logo-container">
+                <h1 class="game-logo">CS<span class="logo-accent">:</span>3D</h1>
+                <p class="game-subtitle">COUNTER-STRIKE 3D</p>
+                <div class="logo-line"></div>
+            </div>
+            <div class="menu-info">
+                <div class="mode-badge">
+                    <span class="mode-icon">⚔</span>
+                    <span id="mode-text">2 vs 2 DEATHMATCH</span>
+                </div>
+                <p class="map-name">📍 Xarita: Dust Zone</p>
+            </div>
+            <div class="team-setup">
+                <div class="team-picker">
+                    <span class="picker-label ct-label">Sizning jamoa (CT) — siz bilan</span>
+                    <div id="ct-count" class="picker-options"></div>
+                </div>
+                <div class="team-picker">
+                    <span class="picker-label t-label">Dushmanlar (T)</span>
+                    <div id="t-count" class="picker-options"></div>
+                </div>
+            </div>
+            <div class="menu-buttons">
+                <button id="play-btn" class="menu-btn primary-btn">
+                    <span class="btn-icon">▶</span>
+                    <span>O'YINNI BOSHLASH</span>
+                </button>
+                <button id="controls-btn" class="menu-btn secondary-btn">
+                    <span class="btn-icon">⌨</span>
+                    <span>BOSHQARUV</span>
+                </button>
+            </div>
+            <div class="menu-footer">
+                <p>WASD — harakat &nbsp;|&nbsp; Sichqoncha — nishon &nbsp;|&nbsp; Click — otish &nbsp;|&nbsp; O'ng click — yaqinlashtirish &nbsp;|&nbsp; R — zaryadlash</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Controls Screen -->
+    <div id="controls-screen" class="screen">
+        <div class="menu-bg"></div>
+        <div class="menu-overlay"></div>
+        <div class="controls-content">
+            <h2 class="controls-title">BOSHQARUV</h2>
+            <div class="controls-grid">
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key">W</span>
+                        <div class="key-row">
+                            <span class="key">A</span>
+                            <span class="key">S</span>
+                            <span class="key">D</span>
+                        </div>
+                    </div>
+                    <span class="control-desc">Harakat</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key wide">🖱 Sichqoncha</span>
+                    </div>
+                    <span class="control-desc">Atrofga qarash</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key wide">Chap Click</span>
+                    </div>
+                    <span class="control-desc">Otish</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key wide">O'ng Click</span>
+                    </div>
+                    <span class="control-desc">Nishonga yaqinlashtirish</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key">R</span>
+                    </div>
+                    <span class="control-desc">Qayta zaryadlash</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key wide">Shift</span>
+                    </div>
+                    <span class="control-desc">Sekin yurish</span>
+                </div>
+                <div class="control-item">
+                    <div class="key-group">
+                        <span class="key wide">SPACE</span>
+                    </div>
+                    <span class="control-desc">Sakrash</span>
+                </div>
+            </div>
+            <button id="back-btn" class="menu-btn secondary-btn">
+                <span class="btn-icon">←</span>
+                <span>ORQAGA</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Game Screen -->
+    <div id="game-screen" class="screen">
+        <canvas id="game-canvas"></canvas>
+
+        <!-- HUD -->
+        <div id="hud">
+            <!-- Top Bar -->
+            <div id="hud-top">
+                <div id="team-ct" class="team-score">
+                    <span class="team-label">CT</span>
+                    <span id="ct-score" class="score-value">0</span>
+                </div>
+                <div id="round-info">
+                    <div id="round-timer">1:45</div>
+                    <div id="round-number">RAUND 1</div>
+                </div>
+                <div id="team-t" class="team-score">
+                    <span id="t-score" class="score-value">0</span>
+                    <span class="team-label">T</span>
+                </div>
+            </div>
+
+            <!-- Kill Feed -->
+            <div id="kill-feed"></div>
+
+            <!-- Bottom HUD -->
+            <div id="hud-bottom">
+                <div id="health-section">
+                    <div id="health-bar-container">
+                        <div id="health-bar"></div>
+                    </div>
+                    <span id="health-text">100</span>
+                </div>
+                <div id="ammo-section">
+                    <div id="weapon-name">AK-47</div>
+                    <div id="ammo-display">
+                        <span id="ammo-current">30</span>
+                        <span class="ammo-separator">/</span>
+                        <span id="ammo-reserve">90</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Crosshair -->
+            <div id="crosshair">
+                <div class="ch-line ch-top"></div>
+                <div class="ch-line ch-right"></div>
+                <div class="ch-line ch-bottom"></div>
+                <div class="ch-line ch-left"></div>
+                <div class="ch-dot"></div>
+            </div>
+
+            <!-- Hit marker -->
+            <div id="hit-marker" class="hidden">
+                <div class="hm-line hm-1"></div>
+                <div class="hm-line hm-2"></div>
+                <div class="hm-line hm-3"></div>
+                <div class="hm-line hm-4"></div>
+            </div>
+
+            <!-- Round announcement -->
+            <div id="round-announcement" class="hidden">
+                <div id="announcement-text"></div>
+            </div>
+
+            <!-- Reload indicator -->
+            <div id="reload-indicator" class="hidden">
+                <div id="reload-progress"></div>
+                <span>ZARYADLANMOQDA...</span>
+            </div>
+
+            <!-- Damage vignette -->
+            <div id="damage-vignette"></div>
+
+            <!-- Click to play overlay -->
+            <div id="click-to-play">
+                <div class="click-prompt">🎯 Bosing — o'yinni davom ettirish</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Game Over Screen -->
+    <div id="gameover-screen" class="screen">
+        <div class="menu-bg"></div>
+        <div class="menu-overlay"></div>
+        <div class="gameover-content">
+            <h2 id="winner-text" class="winner-title">CT G'ALABA!</h2>
+            <div id="final-scores" class="final-scores">
+                <div class="final-team ct-final">
+                    <span class="final-label">Counter-Terrorists</span>
+                    <span id="final-ct" class="final-score">0</span>
+                </div>
+                <div class="vs-divider">VS</div>
+                <div class="final-team t-final">
+                    <span class="final-label">Terrorists</span>
+                    <span id="final-t" class="final-score">0</span>
+                </div>
+            </div>
+            <div id="player-stats" class="player-stats">
+                <h3>SIZNING STATISTIKA</h3>
+                <div class="stats-row">
+                    <div class="stat-item">
+                        <span class="stat-value" id="stat-kills">0</span>
+                        <span class="stat-label">O'ldirish</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="stat-deaths">0</span>
+                        <span class="stat-label">O'lish</span>
+                    </div>
+                    <div class="stat-item">
+                        <span class="stat-value" id="stat-kd">0.0</span>
+                        <span class="stat-label">K/D</span>
+                    </div>
+                </div>
+            </div>
+            <button id="restart-btn" class="menu-btn primary-btn">
+                <span class="btn-icon">↻</span>
+                <span>QAYTA O'YNASH</span>
+            </button>
+            <button id="menu-btn" class="menu-btn secondary-btn">
+                <span class="btn-icon">⌂</span>
+                <span>BOSH MENYU</span>
+            </button>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="game.js"></script>
+</body>
+</html>
