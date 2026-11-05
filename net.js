@@ -11,9 +11,21 @@
     // Adashtiradigan belgilar (0/O, 1/I) kodga kirmaydi
     const CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     const CODE_LENGTH = 5;
-    const JOIN_TIMEOUT = 15000;
+    // To'g'ridan-to'g'ri yo'l topilmaganda aloqa Metered oraliq serveri orqali o'tadi.
+    // 443-port TLS bilan: qattiq cheklangan tarmoqlarda ham ochiq bo'ladi
+    const TURN_AUTH = { username: '69a50f78402c0ac74006997f', credential: 'B1KCsfd8DY/3eR4s' };
+    const ICE_SERVERS = [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun.relay.metered.ca:80' },
+        { urls: 'turn:global.relay.metered.ca:80', ...TURN_AUTH },
+        { urls: 'turn:global.relay.metered.ca:80?transport=tcp', ...TURN_AUTH },
+        { urls: 'turn:global.relay.metered.ca:443', ...TURN_AUTH },
+        { urls: 'turns:global.relay.metered.ca:443?transport=tcp', ...TURN_AUTH },
+    ];
+    const PEER_OPTIONS = { config: { iceServers: ICE_SERVERS } };
+    const JOIN_TIMEOUT = 30000; // oraliq server orqali ulanish sekinroq
     const KEEPALIVE_MS = 1000;
-    const SILENCE_LIMIT = 10000;
+    const SILENCE_LIMIT = 20000; // o'yin yuklanayotganda brauzer bir necha soniya band bo'ladi
     const RECONNECT_DELAY = 3000;
     const CONNECT_OPTIONS = { reliable: true, serialization: 'json' };
 
@@ -73,7 +85,7 @@
 
         function open() {
             const code = makeCode();
-            peer = new window.Peer(PREFIX + code);
+            peer = new window.Peer(PREFIX + code, PEER_OPTIONS);
             peer.on('open', () => {
                 opened = true;
                 handlers.onOpen(code);
@@ -127,7 +139,7 @@
 
     // === MEHMON ===
     function join(rawCode, handlers) {
-        const peer = new window.Peer();
+        const peer = new window.Peer(PEER_OPTIONS);
         let conn = null;
         let connected = false;
         let finished = false;
@@ -144,7 +156,7 @@
         }
 
         const timeout = setTimeout(() => {
-            finish(handlers.onError, "Ulanib bo'lmadi: tarmoq to'g'ridan-to'g'ri aloqaga ruxsat bermadi.");
+            finish(handlers.onError, "Ulanib bo'lmadi. Internetni tekshirib, qayta urinib ko'ring.");
         }, JOIN_TIMEOUT);
 
         peer.on('open', () => {
@@ -167,7 +179,10 @@
                 if (msg && msg.t !== 'k') handlers.onMessage(msg);
             });
             conn.on('close', () => {
-                if (connected) finish(handlers.onClose, "Xona yopildi.");
+                if (connected) finish(handlers.onClose, "Xona bilan aloqa uzildi.");
+            });
+            conn.on('error', err => {
+                if (!connected) finish(handlers.onError, describeError(err));
             });
         });
 
