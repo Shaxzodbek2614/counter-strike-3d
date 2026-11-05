@@ -42,6 +42,10 @@
                     <span class="btn-icon">▶</span>
                     <span>O'YINNI BOSHLASH</span>
                 </button>
+                <button id="online-btn" class="menu-btn primary-btn">
+                    <span class="btn-icon">🌐</span>
+                    <span>ONLAYN O'YNASH</span>
+                </button>
                 <button id="controls-btn" class="menu-btn secondary-btn">
                     <span class="btn-icon">⌨</span>
                     <span>BOSHQARUV</span>
@@ -111,6 +115,70 @@
             <button id="back-btn" class="menu-btn secondary-btn">
                 <span class="btn-icon">←</span>
                 <span>ORQAGA</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Online Screen -->
+    <div id="online-screen" class="screen">
+        <div class="menu-bg"></div>
+        <div class="menu-overlay"></div>
+        <div class="online-content">
+            <h2 class="controls-title">ONLAYN O'YIN</h2>
+            <label class="field">
+                <span class="field-label">Ismingiz</span>
+                <input id="name-input" class="text-input" type="text" maxlength="14" placeholder="Ismingizni yozing" autocomplete="off">
+            </label>
+            <button id="create-room-btn" class="menu-btn primary-btn online-wide">
+                <span class="btn-icon">＋</span>
+                <span>XONA OCHISH</span>
+            </button>
+            <div class="online-divider">yoki do'stingiz xonasiga kiring</div>
+            <div class="join-row">
+                <input id="code-input" class="text-input code-input" type="text" maxlength="5" placeholder="KOD" autocomplete="off" aria-label="Xona kodi">
+                <button id="join-room-btn" class="menu-btn secondary-btn">KIRISH</button>
+            </div>
+            <p id="online-status" class="online-status" role="status"></p>
+            <button id="online-back-btn" class="menu-btn secondary-btn online-wide">
+                <span class="btn-icon">←</span>
+                <span>ORQAGA</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- Lobby Screen -->
+    <div id="lobby-screen" class="screen">
+        <div class="menu-bg"></div>
+        <div class="menu-overlay"></div>
+        <div class="online-content lobby-content">
+            <div class="room-code-box">
+                <span class="field-label">Xona kodi</span>
+                <span id="room-code" class="room-code"></span>
+                <button id="copy-link-btn" class="link-btn" type="button">Taklif havolasini nusxalash</button>
+            </div>
+            <div class="lobby-teams">
+                <div class="lobby-team">
+                    <span class="picker-label ct-label">CT jamoasi</span>
+                    <ul id="lobby-ct" class="lobby-list"></ul>
+                </div>
+                <div class="lobby-team">
+                    <span class="picker-label t-label">T jamoasi</span>
+                    <ul id="lobby-t" class="lobby-list"></ul>
+                </div>
+            </div>
+            <button id="switch-team-btn" class="link-btn" type="button">Jamoani almashtirish</button>
+            <label id="fill-bots-row" class="toggle-row hidden">
+                <input id="fill-bots" type="checkbox" checked>
+                <span>Jamoalarni botlar bilan tenglashtirish</span>
+            </label>
+            <p id="lobby-status" class="online-status" role="status"></p>
+            <button id="start-match-btn" class="menu-btn primary-btn online-wide hidden">
+                <span class="btn-icon">▶</span>
+                <span>BOSHLASH</span>
+            </button>
+            <button id="lobby-leave-btn" class="menu-btn secondary-btn online-wide">
+                <span class="btn-icon">←</span>
+                <span>XONADAN CHIQISH</span>
             </button>
         </div>
     </div>
@@ -192,6 +260,7 @@
             <!-- Click to play overlay -->
             <div id="click-to-play">
                 <div class="click-prompt">🎯 Bosing — o'yinni davom ettirish</div>
+                <button id="leave-match-btn" class="link-btn hidden" type="button">O'yindan chiqish</button>
             </div>
         </div>
     </div>
@@ -232,8 +301,9 @@
             </div>
             <button id="restart-btn" class="menu-btn primary-btn">
                 <span class="btn-icon">↻</span>
-                <span>QAYTA O'YNASH</span>
+                <span id="restart-label">QAYTA O'YNASH</span>
             </button>
+            <p id="gameover-wait" class="online-status hidden">Xona egasi yangi o'yin ochishini kuting</p>
             <button id="menu-btn" class="menu-btn secondary-btn">
                 <span class="btn-icon">⌂</span>
                 <span>BOSH MENYU</span>
@@ -242,6 +312,8 @@
     </div>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/peerjs/1.5.4/peerjs.min.js"></script>
+    <script src="net.js"></script>
     <script src="game.js"></script>
 </body>
 </html>

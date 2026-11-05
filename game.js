@@ -1,6 +1,7 @@
 // ============================================
 // CS:3D — Counter-Strike 3D FPS Web Game
 // Team Deathmatch (1–5 vs 1–5) on "Dust Zone" map
+// Botlarga qarshi yoki do'stlar bilan onlayn (net.js)
 // Built with Three.js
 // ============================================
 
@@ -34,6 +35,12 @@
     const FOV_NORMAL = 75;
     const FOV_ZOOM = 30;
     const MAX_TEAM_SIZE = 5;
+    const NET_VERSION = 1;
+    const NET_TICK_MS = 50;
+    const BOT_ID_START = 100;
+    const MAX_NAME_LENGTH = 14;
+    const SMOOTHING_RATE = 15;
+    const TELEPORT_DISTANCE = 12;
 
     // === MAP ===
     // 0=floor, 1=wall, 2=box(half-height), 3=barrel
@@ -100,6 +107,9 @@
     let audioCtx = null;
     let noiseBuffer = null;
     let players = [];
+    let me = null; // shu kompyuterdagi o'yinchi
+    let online = null; // null = yakka o'yin
+    let roundChangeTimer = null;
     let playerMeshes = {};
     let wallBoxes = []; // for collision
     let ctScore = 0, tScore = 0;
@@ -119,6 +129,8 @@
     const screens = {
         menu: document.getElementById('menu-screen'),
         controls: document.getElementById('controls-screen'),
+        online: document.getElementById('online-screen'),
+        lobby: document.getElementById('lobby-screen'),
         game: document.getElementById('game-screen'),
         gameover: document.getElementById('gameover-screen'),
     };
@@ -161,6 +173,11 @@
             this.reserve = MAX_RESERVE;
             this.reloading = false;
             this.lastShot = 0;
+            // Tarmoqdan kelgan oxirgi holat: o'yinchi shu nuqtaga silliq yetib boradi
+            this.netX = this.x;
+            this.netY = this.y;
+            this.netZ = this.z;
+            this.netYaw = this.yaw;
             this.respawnTimer = 0;
             // Bot AI state
             this.botTarget = null;
@@ -183,6 +200,10 @@
             this.reloading = false;
             this.respawnTimer = 0;
             this.yaw = this.team === 'ct' ? 0 : Math.PI;
+            this.netX = this.x;
+            this.netY = this.y;
+            this.netZ = this.z;
+            this.netYaw = this.yaw;
         }
     }
 
@@ -532,7 +553,7 @@
             if (!p.alive || p.id === shooterId) continue; // otuvchining o'zi emas
 
             // Simple sphere check for each player
-            const playerPos = new THREE.Vector3(p.x, PLAYER_HEIGHT / 2 + 0.5, p.z);
+            const playerPos = new THREE.Vector3(p.x, p.y - EYE_HEIGHT + PLAYER_HEIGHT / 2 + 0.5, p.z);
             const toPlayer = new THREE.Vector3().subVectors(playerPos, origin);
             const projDist = toPlayer.dot(direction);
 
@@ -572,8 +593,13 @@
     }
 
     // === SHOOTING ===
+    function rollDamage(headshotChance) {
+        const isHeadshot = Math.random() < headshotChance;
+        return Math.round(isHeadshot ? BULLET_DAMAGE * HEADSHOT_MULT : BULLET_DAMAGE);
+    }
+
     function playerShoot() {
-        const p = players[0];
+        const p = me;
         if (!p || !p.alive || p.reloading) return;
         if (p.ammo <= 0) {
             if (p.reserve > 0) startReload(p);
@@ -606,23 +632,20 @@
 
         // Raycast
         const hit = raycast(p.id, p.x, p.y, p.z, dir.x, dir.y, dir.z);
+        const end = hit
+            ? hit.point
+            : { x: p.x + dir.x * 100, y: p.y + dir.y * 100, z: p.z + dir.z * 100 };
+        const target = hit && hit.type === 'player' ? hit.player : null;
+        const wallHit = Boolean(hit) && !target;
 
-        if (hit) {
-            // Tracer
-            createTracer(p.x, p.y, p.z, hit.point.x, hit.point.y, hit.point.z);
+        createTracer(p.x, p.y, p.z, end.x, end.y, end.z);
+        if (wallHit) createImpactSpark(end.x, end.y, end.z);
 
-            if (hit.type === 'player') {
-                const isHeadshot = Math.random() < HEADSHOT_CHANCE;
-                const damage = isHeadshot ? BULLET_DAMAGE * HEADSHOT_MULT : BULLET_DAMAGE;
-                damagePlayer(hit.player, Math.round(damage), 0);
-                showHitMarker();
-            } else {
-                createImpactSpark(hit.point.x, hit.point.y, hit.point.z);
-            }
-        } else {
-            // Tracer into distance
-            createTracer(p.x, p.y, p.z,
-                p.x + dir.x * 100, p.y + dir.y * 100, p.z + dir.z * 100);
+        if (online) {
+            sendOwnShot(p, end, wallHit, target);
+        } else if (target) {
+            damagePlayer(target, rollDamage(HEADSHOT_CHANCE), p.id);
+            showHitMarker();
         }
 
         // Auto reload
@@ -657,16 +680,18 @@
             if (hit) {
                 createTracer(bot.x, bot.y, bot.z, hit.point.x, hit.point.y, hit.point.z);
 
-                if (hit.type === 'player' && hit.player.team !== bot.team) {
-                    const isHeadshot = Math.random() < HEADSHOT_CHANCE * 0.7;
-                    const damage = isHeadshot ? BULLET_DAMAGE * HEADSHOT_MULT : BULLET_DAMAGE;
-                    damagePlayer(hit.player, Math.round(damage), bot.id);
+                const hitEnemy = hit.type === 'player' && hit.player.team !== bot.team;
+                broadcastShot(bot, hit.point, !hitEnemy);
+
+                if (hitEnemy) {
+                    damagePlayer(hit.player, rollDamage(HEADSHOT_CHANCE * 0.7), bot.id);
                 } else {
                     createImpactSpark(hit.point.x, hit.point.y, hit.point.z);
                 }
             } else {
-                createTracer(bot.x, bot.y, bot.z,
-                    bot.x + dirX * 80, bot.y + dirY * 80, bot.z + dirZ * 80);
+                const end = { x: bot.x + dirX * 80, y: bot.y + dirY * 80, z: bot.z + dirZ * 80 };
+                createTracer(bot.x, bot.y, bot.z, end.x, end.y, end.z);
+                broadcastShot(bot, end, false);
             }
         }
 
@@ -675,7 +700,7 @@
 
     function startReload(p) {
         p.reloading = true;
-        if (p.id === 0) {
+        if (p === me) {
             hud.reloadIndicator.classList.remove('hidden');
             const progress = document.getElementById('reload-progress');
             progress.style.animation = 'none';
@@ -690,7 +715,7 @@
                 p.reserve -= avail;
             }
             p.reloading = false;
-            if (p.id === 0) {
+            if (p === me) {
                 hud.reloadIndicator.classList.add('hidden');
                 updateHUD();
             }
@@ -762,7 +787,6 @@
 
     // Bot o'qi: uzoqlashgan sari pasayadi, chap/o'ng tomondan eshitiladi
     function playBotGunshot(bot) {
-        const me = players[0];
         if (!me) return;
         const dx = bot.x - me.x;
         const dz = bot.z - me.z;
@@ -824,18 +848,29 @@
     }
 
     // === DAMAGE ===
+    // Yakka o'yinda va xona egasida ishlaydi: zararni aynan shu yerda hal qilamiz
     function damagePlayer(target, damage, attackerId) {
         if (!target.alive) return;
-        target.health -= damage;
+        const health = Math.max(0, target.health - damage);
+        const headshot = damage >= BULLET_DAMAGE * HEADSHOT_MULT * 0.9;
 
+        applyDamage(target, health, attackerId, headshot);
+        if (isHost()) {
+            online.room.broadcast({ t: 'damage', id: target.id, health, by: attackerId, headshot });
+        }
+        if (health === 0) checkRoundEnd();
+    }
+
+    // Barcha kompyuterlarda ishlaydi: holat va ko'rinishni yangilaydi
+    function applyDamage(target, health, attackerId, headshot) {
+        target.health = health;
         createBloodEffect(target.x, EYE_HEIGHT, target.z);
 
-        if (target.id === 0) {
+        if (target === me) {
             showDamageVignette();
         }
 
-        if (target.health <= 0) {
-            target.health = 0;
+        if (health === 0) {
             target.alive = false;
             target.respawnTimer = RESPAWN_TIME;
 
@@ -846,14 +881,23 @@
 
             const attacker = players.find(p => p.id === attackerId);
             if (attacker) {
-                addKillFeed(attacker, target, damage >= BULLET_DAMAGE * HEADSHOT_MULT * 0.9);
-                if (!attacker.isBot) playerStats.kills++;
+                addKillFeed(attacker, target, headshot);
+                if (attacker === me) playerStats.kills++;
             }
-            if (!target.isBot) playerStats.deaths++;
-
-            checkRoundEnd();
+            if (target === me) playerStats.deaths++;
         }
         updateHUD();
+    }
+
+    function revivePlayer(p) {
+        p.reset(p.spawn.col, p.spawn.row);
+        if (playerMeshes[p.id]) playerMeshes[p.id].visible = true;
+        if (p === me) {
+            playerVelocityY = 0;
+            playerOnGround = true;
+            camera.position.set(p.x, p.y, p.z);
+            updateHUD();
+        }
     }
 
     function showDamageVignette() {
@@ -884,13 +928,11 @@
     // === BOT AI ===
     function updateBot(bot, dt) {
         if (!bot.alive) {
-            bot.respawnTimer -= dt * 1000;
-            if (bot.respawnTimer <= 0) {
-                bot.reset(bot.spawn.col, bot.spawn.row);
-                if (playerMeshes[bot.id]) playerMeshes[bot.id].visible = true;
-            }
+            tickRespawn(bot, dt);
             return;
         }
+
+        const frames = dt * 60; // tezlik monitor chastotasiga bog'liq bo'lmasin
 
         // Find closest enemy
         let closest = null;
@@ -935,7 +977,7 @@
             else if (closestDist > 50) moveAngle = bot.yaw;
             else moveAngle = strafeAngle;
 
-            const spd = MOVE_SPEED * 0.8;
+            const spd = MOVE_SPEED * 0.8 * frames;
             const result = moveWithCollision(
                 bot.x, bot.z,
                 Math.sin(moveAngle) * spd,
@@ -967,8 +1009,8 @@
                     bot.yaw = Math.atan2(dx, dz);
                     const result = moveWithCollision(
                         bot.x, bot.z,
-                        Math.sin(bot.yaw) * MOVE_SPEED,
-                        Math.cos(bot.yaw) * MOVE_SPEED,
+                        Math.sin(bot.yaw) * MOVE_SPEED * frames,
+                        Math.cos(bot.yaw) * MOVE_SPEED * frames,
                         PLAYER_RADIUS
                     );
                     bot.x = result.x;
@@ -982,30 +1024,45 @@
                 startReload(bot);
             }
         }
+    }
 
-        // Update mesh position
-        const mesh = playerMeshes[bot.id];
-        if (mesh) {
-            mesh.position.set(bot.x, 0, bot.z);
-            mesh.rotation.y = bot.yaw;
+    function tickRespawn(p, dt) {
+        p.respawnTimer -= dt * 1000;
+        if (p.respawnTimer <= 0) revivePlayer(p);
+    }
 
-            // Health bar
-            const hb = mesh.getObjectByName('healthBar');
-            if (hb) {
-                hb.lookAt(camera.position);
-                const fill = mesh.getObjectByName('healthFill');
-                if (fill) {
-                    const pct = bot.health / 100;
-                    fill.scale.x = Math.max(0.01, pct);
-                    fill.position.x = -(1 - pct) * 0.6;
-                    fill.material.color.setHex(pct > 0.5 ? 0x2ecc71 : pct > 0.25 ? 0xf39c12 : 0xe74c3c);
-                }
+    // Botlar va qayta tug'ilish: mehmon kompyuterida ishlamaydi
+    function simulate(dt) {
+        for (const p of players) {
+            if (p.isBot) updateBot(p, dt);
+            else if (!p.alive) tickRespawn(p, dt);
+        }
+    }
+
+    function updatePlayerMesh(p) {
+        const mesh = playerMeshes[p.id];
+        if (!mesh) return;
+
+        mesh.position.set(p.x, p.y - EYE_HEIGHT, p.z);
+        mesh.rotation.y = p.yaw;
+
+        // Health bar
+        const hb = mesh.getObjectByName('healthBar');
+        if (hb) {
+            hb.lookAt(camera.position);
+            const fill = mesh.getObjectByName('healthFill');
+            if (fill) {
+                const pct = p.health / 100;
+                fill.scale.x = Math.max(0.01, pct);
+                fill.position.x = -(1 - pct) * 0.6;
+                fill.material.color.setHex(pct > 0.5 ? 0x2ecc71 : pct > 0.25 ? 0xf39c12 : 0xe74c3c);
             }
         }
     }
 
     // === ROUND MANAGEMENT ===
     function checkRoundEnd() {
+        if (gameState !== 'playing') return;
         const ctAlive = players.filter(p => p.team === 'ct' && p.alive).length;
         const tAlive = players.filter(p => p.team === 't' && p.alive).length;
         if (ctAlive === 0) endRound('t');
@@ -1013,32 +1070,40 @@
     }
 
     function endRound(winner) {
-        gameState = 'roundEnd';
         clearInterval(roundTimerInterval);
 
-        if (winner === 'ct') {
-            ctScore++;
-            showAnnouncement("CT G'ALABA!");
-        } else {
-            tScore++;
-            showAnnouncement("TERRORISTLAR G'ALABA!");
-        }
-        updateHUD();
+        if (winner === 'ct') ctScore++;
+        else tScore++;
+        showRoundResult(winner);
+        if (isHost()) online.room.broadcast({ t: 'roundEnd', winner, ct: ctScore, ts: tScore });
 
         if (ctScore >= ROUNDS_TO_WIN || tScore >= ROUNDS_TO_WIN) {
-            setTimeout(endGame, 2500);
+            roundChangeTimer = setTimeout(endGame, 2500);
         } else {
-            currentRound++;
-            setTimeout(() => {
+            roundChangeTimer = setTimeout(() => {
+                currentRound++;
                 gameState = 'playing';
-                startRound();
+                startRound(online ? online.roster : buildSoloRoster());
             }, 3000);
         }
+    }
+
+    function showRoundResult(winner) {
+        gameState = 'roundEnd';
+        showAnnouncement(winner === 'ct' ? "CT G'ALABA!" : "TERRORISTLAR G'ALABA!");
+        updateHUD();
     }
 
     function endGame() {
         gameState = 'gameOver';
         clearInterval(roundTimerInterval);
+        if (online) {
+            online.inMatch = false;
+            if (isHost()) online.room.broadcast({ t: 'gameOver' });
+        }
+        document.getElementById('restart-label').textContent = online ? "XONAGA QAYTISH" : "QAYTA O'YNASH";
+        document.getElementById('restart-btn').classList.toggle('hidden', isClient());
+        document.getElementById('gameover-wait').classList.toggle('hidden', !isClient());
         document.exitPointerLock?.();
 
         const winner = ctScore >= ROUNDS_TO_WIN ? 'CT' : 'TERRORISTLAR';
@@ -1054,7 +1119,7 @@
 
     // === HUD ===
     function updateHUD() {
-        const p = players[0];
+        const p = me;
         if (!p) return;
         hud.ctScore.textContent = ctScore;
         hud.tScore.textContent = tScore;
@@ -1073,9 +1138,16 @@
     function addKillFeed(killer, victim, headshot) {
         const entry = document.createElement('div');
         entry.className = 'kill-entry';
-        const cls = killer.team === 't' ? 'killer t-team' : 'killer';
-        const wep = headshot ? '🎯 AK-47' : 'AK-47';
-        entry.innerHTML = `<span class="${cls}">${killer.name}</span><span class="weapon-icon">${wep}</span><span class="victim">${victim.name}</span>`;
+        // Ismlarni boshqa o'yinchilar yozadi: faqat matn sifatida qo'yamiz
+        const addPart = (className, text) => {
+            const part = document.createElement('span');
+            part.className = className;
+            part.textContent = text;
+            entry.appendChild(part);
+        };
+        addPart(killer.team === 't' ? 'killer t-team' : 'killer', killer.name);
+        addPart('weapon-icon', headshot ? '🎯 AK-47' : 'AK-47');
+        addPart('victim', victim.name);
         hud.killFeed.appendChild(entry);
         setTimeout(() => { entry.style.opacity = '0'; setTimeout(() => entry.remove(), 400); }, 4000);
         while (hud.killFeed.children.length > 5) hud.killFeed.removeChild(hud.killFeed.firstChild);
@@ -1104,14 +1176,14 @@
     function setupInput() {
         window.addEventListener('keydown', e => {
             keys[e.code] = true;
-            if (e.code === 'Escape' && gameState === 'playing') {
+            if (e.code === 'Escape' && gameState === 'playing' && !online) {
                 document.exitPointerLock?.();
                 gameState = 'menu';
                 showScreen('menu');
                 clearInterval(roundTimerInterval);
             }
             if (e.code === 'KeyR' && gameState === 'playing') {
-                const p = players[0];
+                const p = me;
                 if (p && p.alive && !p.reloading && p.ammo < MAX_AMMO && p.reserve > 0) startReload(p);
             }
         });
@@ -1132,17 +1204,15 @@
 
         canvas.addEventListener('click', () => {
             if (gameState === 'playing' && !pointerLocked) {
-                canvas.requestPointerLock();
+                lockPointer();
             }
         });
 
-        hud.clickToPlay.addEventListener('click', () => {
-            canvas.requestPointerLock();
-        });
+        hud.clickToPlay.addEventListener('click', lockPointer);
 
         document.addEventListener('mousemove', e => {
             if (!pointerLocked || gameState !== 'playing') return;
-            const p = players[0];
+            const p = me;
             if (!p || !p.alive) return;
 
             // Yaqinlashganda sichqoncha ham sekinlashadi
@@ -1162,6 +1232,13 @@
         });
 
         canvas.addEventListener('contextmenu', e => e.preventDefault());
+    }
+
+    function lockPointer() {
+        initAudio();
+        const request = canvas.requestPointerLock();
+        // Ba'zi brauzerlar rad etganda Promise qaytaradi: foydalanuvchi qayta bosadi
+        if (request && request.catch) request.catch(() => {});
     }
 
     // === JAMOA HAJMI ===
@@ -1211,7 +1288,7 @@
     }
 
     // === GAME START ===
-    function startGame() {
+    function prepareMatch() {
         gameState = 'playing';
         ctScore = 0;
         tScore = 0;
@@ -1226,12 +1303,29 @@
             createGunModel();
         }
 
+        document.getElementById('leave-match-btn').classList.toggle('hidden', !online);
         showScreen('game');
-        startRound();
-        canvas.requestPointerLock();
     }
 
-    function startRound() {
+    function startGame() {
+        prepareMatch();
+        startRound(buildSoloRoster());
+        lockPointer();
+    }
+
+    function buildSoloRoster() {
+        const roster = [];
+        let nextId = 0;
+        for (let i = 0; i < teamSizes.ct; i++) {
+            roster.push({ id: nextId++, name: i === 0 ? 'Siz' : `Sherik_${i}`, team: 'ct', bot: i !== 0, slot: i });
+        }
+        for (let i = 0; i < teamSizes.t; i++) {
+            roster.push({ id: nextId++, name: `Dushman_${i + 1}`, team: 't', bot: true, slot: i });
+        }
+        return roster;
+    }
+
+    function startRound(roster) {
         tracerLines.forEach(t => scene.remove(t.mesh));
         tracerLines = [];
         impactParticles.forEach(p => scene.remove(p.mesh));
@@ -1242,24 +1336,22 @@
         Object.values(playerMeshes).forEach(m => scene.remove(m));
         playerMeshes = {};
 
-        // Create players — menyuda tanlangan son bo'yicha
-        players = [];
-        let nextId = 0;
-        for (let i = 0; i < teamSizes.ct; i++) {
-            const name = i === 0 ? 'Siz' : `Sherik_${i}`;
-            players.push(new PlayerData(nextId++, name, 'ct', CT_SPAWNS[i].col, CT_SPAWNS[i].row, i !== 0));
-        }
-        for (let i = 0; i < teamSizes.t; i++) {
-            players.push(new PlayerData(nextId++, `Dushman_${i + 1}`, 't', T_SPAWNS[i].col, T_SPAWNS[i].row, true));
+        // Create players
+        players = roster.map(r => {
+            const spawn = (r.team === 'ct' ? CT_SPAWNS : T_SPAWNS)[r.slot];
+            return new PlayerData(r.id, r.name, r.team, spawn.col, spawn.row, r.bot);
+        });
+        me = players.find(p => p.id === (online ? online.myId : 0));
+
+        // O'zimizdan boshqa hammaning modeli ko'rinadi
+        for (const p of players) {
+            if (p !== me) createPlayerMesh(p);
         }
 
-        // Create meshes for bots
-        for (const p of players) {
-            if (p.isBot) createPlayerMesh(p);
-        }
+        hud.reloadIndicator.classList.add('hidden');
 
         // Position camera
-        const p = players[0];
+        const p = me;
         camera.position.set(p.x, p.y, p.z);
         camera.rotation.set(0, 0, 0);
         aimDown = false;
@@ -1270,16 +1362,548 @@
 
         roundTimer = ROUND_TIME;
         clearInterval(roundTimerInterval);
-        roundTimerInterval = setInterval(() => {
-            if (gameState === 'playing') {
-                roundTimer--;
-                updateHUD();
-                if (roundTimer <= 0) endRound('ct');
-            }
-        }, 1000);
+        // Mehmon vaqtni xona egasidan oladi
+        if (!isClient()) {
+            roundTimerInterval = setInterval(() => {
+                if (gameState === 'playing') {
+                    roundTimer--;
+                    updateHUD();
+                    if (roundTimer <= 0) endRound('ct');
+                }
+            }, 1000);
+        }
+
+        if (isHost()) {
+            online.room.broadcast({ t: 'round', round: currentRound, ct: ctScore, ts: tScore, roster });
+        }
 
         updateHUD();
-        showAnnouncement(`RAUND ${currentRound}`);
+        showAnnouncement(online
+            ? `RAUND ${currentRound} — SIZ ${me.team.toUpperCase()} JAMOASIDA`
+            : `RAUND ${currentRound}`);
+    }
+
+    // === ONLAYN O'YIN ===
+    // Xona egasi raund, vaqt, jon va botlarni boshqaradi.
+    // Har bir o'yinchi o'z harakatini o'zi hisoblaydi va o'z ekranida ko'rgan nishonni xabar qiladi.
+    const onlineUI = {
+        name: document.getElementById('name-input'),
+        code: document.getElementById('code-input'),
+        status: document.getElementById('online-status'),
+        createBtn: document.getElementById('create-room-btn'),
+        joinBtn: document.getElementById('join-room-btn'),
+        roomCode: document.getElementById('room-code'),
+        lobbyStatus: document.getElementById('lobby-status'),
+        fillRow: document.getElementById('fill-bots-row'),
+        fillBots: document.getElementById('fill-bots'),
+        startBtn: document.getElementById('start-match-btn'),
+    };
+
+    function isHost() { return Boolean(online) && online.role === 'host'; }
+    function isClient() { return Boolean(online) && online.role === 'client'; }
+
+    function setStatus(el, text, isError) {
+        el.textContent = text;
+        el.classList.toggle('error', Boolean(isError));
+    }
+
+    function cleanName(raw) {
+        return String(raw || '').trim().slice(0, MAX_NAME_LENGTH);
+    }
+
+    function validVector(v) {
+        return Array.isArray(v) && v.length === 3 && v.every(Number.isFinite);
+    }
+
+    function roundCoord(n) {
+        return Math.round(n * 100) / 100;
+    }
+
+    function coords(p) {
+        return [roundCoord(p.x), roundCoord(p.y), roundCoord(p.z)];
+    }
+
+    function setOnlineBusy(busy) {
+        onlineUI.createBtn.disabled = busy;
+        onlineUI.joinBtn.disabled = busy;
+    }
+
+    function readPlayerName() {
+        const name = cleanName(onlineUI.name.value);
+        if (!name) {
+            setStatus(onlineUI.status, "Avval ismingizni yozing.", true);
+            onlineUI.name.focus();
+            return null;
+        }
+        try { localStorage.setItem('cs3d-name', name); } catch (e) { /* e'tiborsiz */ }
+        return name;
+    }
+
+    // Xonadan chiqish: sabab berilsa, onlayn ekranda ko'rsatiladi
+    function leaveOnline(reason) {
+        if (!online) return;
+        const room = online.room;
+        online = null;
+        if (room) room.close();
+
+        clearInterval(roundTimerInterval);
+        clearTimeout(roundChangeTimer);
+        setOnlineBusy(false);
+        if (gameState !== 'menu') {
+            gameState = 'menu';
+            document.exitPointerLock?.();
+        }
+        if (reason) {
+            setStatus(onlineUI.status, reason, true);
+            showScreen('online');
+        }
+    }
+
+    function createRoom() {
+        const name = readPlayerName();
+        if (!name) return;
+        initAudio();
+        setOnlineBusy(true);
+        setStatus(onlineUI.status, "Xona ochilmoqda...");
+
+        online = {
+            role: 'host',
+            myId: 0,
+            nextId: 1,
+            code: '',
+            inMatch: false,
+            fillBots: true,
+            roster: [],
+            members: [{ id: 0, name, team: 'ct', peer: null }],
+        };
+        online.room = Net.host({
+            onOpen(code) {
+                online.code = code;
+                setOnlineBusy(false);
+                setStatus(onlineUI.status, '');
+                showLobby();
+            },
+            onGuestMessage: handleGuestMessage,
+            onGuestLeave: handleGuestLeave,
+            onError: text => leaveOnline(text),
+        });
+    }
+
+    function joinRoom() {
+        const name = readPlayerName();
+        if (!name) return;
+        const code = Net.normalizeCode(onlineUI.code.value);
+        if (code.length !== 5) {
+            setStatus(onlineUI.status, "Xona kodi 5 ta belgidan iborat.", true);
+            onlineUI.code.focus();
+            return;
+        }
+        initAudio();
+        setOnlineBusy(true);
+        setStatus(onlineUI.status, "Xonaga ulanilmoqda...");
+
+        online = { role: 'client', myId: null, code, inMatch: false, fillBots: true, roster: [], members: [] };
+        online.room = Net.join(code, {
+            onOpen() {
+                online.room.send({ t: 'hello', name, version: NET_VERSION });
+            },
+            onMessage: handleHostMessage,
+            onClose: text => leaveOnline(text),
+            onError: text => leaveOnline(text),
+        });
+    }
+
+    // === XONA (LOBBY) ===
+    function showLobby() {
+        const host = isHost();
+        onlineUI.roomCode.textContent = online.code;
+        onlineUI.fillRow.classList.toggle('hidden', !host);
+        onlineUI.startBtn.classList.toggle('hidden', !host);
+        setStatus(onlineUI.lobbyStatus, host ? "Do'stlaringizga kodni yuboring" : "Xona egasi boshlashini kuting");
+        renderLobby();
+        showScreen('lobby');
+    }
+
+    function renderLobby() {
+        for (const team of ['ct', 't']) {
+            const list = document.getElementById(`lobby-${team}`);
+            list.textContent = '';
+            for (const member of online.members) {
+                if (member.team !== team) continue;
+                const item = document.createElement('li');
+                item.textContent = member.id === 0 ? `${member.name} ★` : member.name;
+                item.classList.toggle('is-me', member.id === online.myId);
+                list.appendChild(item);
+            }
+        }
+        onlineUI.fillBots.checked = online.fillBots;
+    }
+
+    function syncLobby() {
+        const members = online.members.map(({ id, name, team }) => ({ id, name, team }));
+        online.room.broadcast({ t: 'lobby', members, fillBots: online.fillBots });
+        renderLobby();
+    }
+
+    function teamCount(team) {
+        return online.members.filter(m => m.team === team).length;
+    }
+
+    function changeTeam(member, team) {
+        if ((team !== 'ct' && team !== 't') || member.team === team) return;
+        if (teamCount(team) >= MAX_TEAM_SIZE || online.inMatch) return;
+        member.team = team;
+        syncLobby();
+    }
+
+    function requestTeamSwitch() {
+        if (isHost()) {
+            const member = online.members[0];
+            changeTeam(member, member.team === 'ct' ? 't' : 'ct');
+            return;
+        }
+        const member = online.members.find(m => m.id === online.myId);
+        if (member) online.room.send({ t: 'team', team: member.team === 'ct' ? 't' : 'ct' });
+    }
+
+    function copyInviteLink() {
+        const link = `${location.origin}${location.pathname}?xona=${online.code}`;
+        const done = () => setStatus(onlineUI.lobbyStatus, "Havola nusxalandi");
+        const failed = () => setStatus(onlineUI.lobbyStatus, link);
+        if (navigator.clipboard) navigator.clipboard.writeText(link).then(done, failed);
+        else failed();
+    }
+
+    function buildOnlineRoster() {
+        const roster = [];
+        const humans = { ct: 0, t: 0 };
+        for (const member of online.members) {
+            roster.push({ id: member.id, name: member.name, team: member.team, bot: false, slot: humans[member.team]++ });
+        }
+        if (online.fillBots) {
+            const target = Math.max(humans.ct, humans.t, 1);
+            let botId = BOT_ID_START;
+            for (const team of ['ct', 't']) {
+                for (let slot = humans[team]; slot < target; slot++) {
+                    roster.push({ id: botId, name: `Bot_${botId - BOT_ID_START + 1}`, team, bot: true, slot });
+                    botId++;
+                }
+            }
+        }
+        return roster;
+    }
+
+    function hostStartMatch() {
+        const roster = buildOnlineRoster();
+        if (!roster.some(r => r.team === 'ct') || !roster.some(r => r.team === 't')) {
+            setStatus(onlineUI.lobbyStatus, "Ikkala jamoada ham kamida bitta o'yinchi bo'lsin.", true);
+            return;
+        }
+        online.roster = roster;
+        online.inMatch = true;
+        prepareMatch();
+        startRound(roster);
+        lockPointer();
+    }
+
+    function hostReturnToLobby() {
+        gameState = 'menu';
+        online.room.broadcast({ t: 'toLobby' });
+        syncLobby();
+        showLobby();
+    }
+
+    // === XONA EGASI: mehmondan kelgan xabarlar ===
+    function rejectGuest(peerId, reason) {
+        online.room.send(peerId, { t: 'reject', reason });
+        setTimeout(() => { if (isHost()) online.room.kick(peerId); }, 500);
+    }
+
+    function handleGuestHello(peerId, msg) {
+        if (msg.version !== NET_VERSION) {
+            rejectGuest(peerId, "O'yin versiyasi boshqacha. Sahifani yangilang.");
+        } else if (online.inMatch) {
+            rejectGuest(peerId, "Bu xonada o'yin allaqachon boshlangan.");
+        } else if (online.members.length >= MAX_TEAM_SIZE * 2) {
+            rejectGuest(peerId, "Xona to'lgan.");
+        } else {
+            const member = {
+                id: online.nextId++,
+                name: cleanName(msg.name) || "O'yinchi",
+                team: teamCount('ct') <= teamCount('t') ? 'ct' : 't',
+                peer: peerId,
+            };
+            online.members.push(member);
+            online.room.send(peerId, { t: 'welcome', id: member.id, code: online.code });
+            syncLobby();
+        }
+    }
+
+    function handleGuestState(member, msg) {
+        const p = players.find(pl => pl.id === member.id);
+        if (!p || !p.alive || !validVector(msg.pos) || !Number.isFinite(msg.yaw)) return;
+        [p.netX, p.netY, p.netZ] = msg.pos;
+        p.netYaw = msg.yaw;
+    }
+
+    function handleGuestShot(member, msg, peerId) {
+        const shooter = players.find(pl => pl.id === member.id);
+        const now = performance.now();
+        if (!shooter || !shooter.alive || gameState !== 'playing' || msg.round !== currentRound) return;
+        if (!validVector(msg.from) || !validVector(msg.to)) return;
+        // Tarmoq kechikishi xabarlarni yaqinlashtirib yuborishi mumkin
+        if (now - shooter.lastShot < FIRE_RATE * 0.5) return;
+        shooter.lastShot = now;
+
+        showRemoteShot(shooter, msg.from, msg.to, msg.wall);
+        online.room.broadcast({ t: 'shot', by: shooter.id, from: msg.from, to: msg.to, wall: msg.wall }, peerId);
+
+        const target = players.find(pl => pl.id === msg.hit);
+        if (target && target.alive && target.team !== shooter.team) {
+            damagePlayer(target, rollDamage(HEADSHOT_CHANCE), shooter.id);
+        }
+    }
+
+    function handleGuestMessage(peerId, msg) {
+        if (!online) return;
+        if (msg.t === 'hello') {
+            handleGuestHello(peerId, msg);
+            return;
+        }
+        const member = online.members.find(m => m.peer === peerId);
+        if (!member) return;
+        if (msg.t === 'team') changeTeam(member, msg.team);
+        else if (msg.t === 'state') handleGuestState(member, msg);
+        else if (msg.t === 'shot') handleGuestShot(member, msg, peerId);
+    }
+
+    function handleGuestLeave(peerId) {
+        if (!online) return;
+        const member = online.members.find(m => m.peer === peerId);
+        if (!member) return;
+        online.members = online.members.filter(m => m !== member);
+
+        if (online.inMatch) {
+            // O'rnini bot egallaydi: jamoa bo'sh qolmaydi
+            const entry = online.roster.find(r => r.id === member.id);
+            if (entry) entry.bot = true;
+            const p = players.find(pl => pl.id === member.id);
+            if (p) p.isBot = true;
+            const text = `${member.name.toUpperCase()} CHIQIB KETDI`;
+            showAnnouncement(text);
+            online.room.broadcast({ t: 'notice', text });
+        }
+        syncLobby();
+    }
+
+    // === MEHMON: xona egasidan kelgan xabarlar ===
+    function applySnapshot(msg) {
+        if (roundTimer !== msg.timer) {
+            roundTimer = msg.timer;
+            updateHUD();
+        }
+        for (const [id, x, y, z, yaw, health, alive] of msg.players) {
+            const p = players.find(pl => pl.id === id);
+            if (!p) continue;
+            if (alive && !p.alive) revivePlayer(p);
+            if (p !== me) {
+                p.netX = x;
+                p.netY = y;
+                p.netZ = z;
+                p.netYaw = yaw;
+            }
+            if (p.health !== health) {
+                p.health = health;
+                if (p === me) updateHUD();
+            }
+        }
+    }
+
+    function enterRound(msg) {
+        if (!online.inMatch) {
+            online.inMatch = true;
+            prepareMatch();
+        }
+        gameState = 'playing';
+        currentRound = msg.round;
+        ctScore = msg.ct;
+        tScore = msg.ts;
+        startRound(msg.roster);
+        // Sichqonchani faqat foydalanuvchi bosganda egallash mumkin
+        if (!pointerLocked) hud.clickToPlay.classList.add('show');
+    }
+
+    function handleHostMessage(msg) {
+        if (!online) return;
+        // Xona egasi qabul qilmaguncha faqat javobini kutamiz
+        if (online.myId === null && msg.t !== 'welcome' && msg.t !== 'reject') return;
+        switch (msg.t) {
+            case 'welcome':
+                online.myId = msg.id;
+                online.code = msg.code;
+                setOnlineBusy(false);
+                setStatus(onlineUI.status, '');
+                break;
+            case 'reject':
+                leaveOnline(msg.reason);
+                break;
+            case 'lobby':
+                online.members = msg.members;
+                online.fillBots = msg.fillBots;
+                if (!online.inMatch && gameState !== 'gameOver') showLobby();
+                break;
+            case 'round':
+                enterRound(msg);
+                break;
+            case 'snapshot':
+                if (online.inMatch) applySnapshot(msg);
+                break;
+            case 'shot': {
+                const shooter = players.find(p => p.id === msg.by);
+                if (shooter) showRemoteShot(shooter, msg.from, msg.to, msg.wall);
+                break;
+            }
+            case 'damage': {
+                const target = players.find(p => p.id === msg.id);
+                if (target && target.alive) applyDamage(target, msg.health, msg.by, msg.headshot);
+                break;
+            }
+            case 'roundEnd':
+                ctScore = msg.ct;
+                tScore = msg.ts;
+                showRoundResult(msg.winner);
+                break;
+            case 'gameOver':
+                endGame();
+                break;
+            case 'toLobby':
+                gameState = 'menu';
+                showLobby();
+                break;
+            case 'notice':
+                showAnnouncement(msg.text);
+                break;
+        }
+    }
+
+    // === OTISHLAR ===
+    function showRemoteShot(shooter, from, to, wall) {
+        createTracer(from[0], from[1], from[2], to[0], to[1], to[2]);
+        if (wall) createImpactSpark(to[0], to[1], to[2]);
+        playBotGunshot(shooter);
+    }
+
+    // O'zimiz otganimizda: nishonni o'z ekranimizdagi holat bo'yicha aniqlaymiz,
+    // shunda kechikish bo'lsa ham ko'rgan odamga tegamiz
+    function sendOwnShot(shooter, end, wall, target) {
+        const enemy = target && target.team !== shooter.team ? target : null;
+        if (enemy) showHitMarker();
+
+        const from = coords(shooter);
+        const to = coords(end);
+        if (isHost()) {
+            online.room.broadcast({ t: 'shot', by: shooter.id, from, to, wall });
+            if (enemy) damagePlayer(enemy, rollDamage(HEADSHOT_CHANCE), shooter.id);
+        } else {
+            online.room.send({ t: 'shot', round: currentRound, from, to, wall, hit: enemy ? enemy.id : null });
+        }
+    }
+
+    function broadcastShot(shooter, end, wall) {
+        if (!isHost()) return;
+        online.room.broadcast({ t: 'shot', by: shooter.id, from: coords(shooter), to: coords(end), wall });
+    }
+
+    // === HOLATNI YUBORISH ===
+    function smoothRemotePlayer(p, dt) {
+        if (Math.hypot(p.netX - p.x, p.netZ - p.z) > TELEPORT_DISTANCE) {
+            p.x = p.netX;
+            p.y = p.netY;
+            p.z = p.netZ;
+            p.yaw = p.netYaw;
+            return;
+        }
+        const blend = 1 - Math.exp(-dt * SMOOTHING_RATE);
+        p.x += (p.netX - p.x) * blend;
+        p.y += (p.netY - p.y) * blend;
+        p.z += (p.netZ - p.z) * blend;
+        const turn = Math.atan2(Math.sin(p.netYaw - p.yaw), Math.cos(p.netYaw - p.yaw));
+        p.yaw += turn * blend;
+    }
+
+    function netTick() {
+        if (!online || !online.inMatch || !me) return;
+        if (gameState !== 'playing' && gameState !== 'roundEnd') return;
+
+        if (isHost()) {
+            if (document.hidden) simulate(NET_TICK_MS / 1000);
+            online.room.broadcast({
+                t: 'snapshot',
+                timer: roundTimer,
+                players: players.map(p => {
+                    const [x, y, z] = coords(p);
+                    return [p.id, x, y, z, roundCoord(p.yaw), p.health, p.alive];
+                }),
+            });
+        } else if (me.alive) {
+            online.room.send({ t: 'state', pos: coords(me), yaw: roundCoord(me.yaw) });
+        }
+    }
+
+    // Brauzer yashirin tabdagi taymerlarni sekinlatadi, Worker ichidagisini esa yo'q
+    function startNetTicker() {
+        try {
+            const source = `setInterval(() => postMessage(0), ${NET_TICK_MS});`;
+            const worker = new Worker(URL.createObjectURL(new Blob([source], { type: 'text/javascript' })));
+            worker.onmessage = netTick;
+        } catch (e) {
+            setInterval(netTick, NET_TICK_MS);
+        }
+    }
+
+    function setupOnline() {
+        try { onlineUI.name.value = localStorage.getItem('cs3d-name') || ''; } catch (e) { /* e'tiborsiz */ }
+
+        document.getElementById('online-btn').addEventListener('click', () => {
+            setStatus(onlineUI.status, '');
+            showScreen('online');
+        });
+        document.getElementById('online-back-btn').addEventListener('click', () => {
+            leaveOnline();
+            showScreen('menu');
+        });
+        onlineUI.createBtn.addEventListener('click', createRoom);
+        onlineUI.joinBtn.addEventListener('click', joinRoom);
+        onlineUI.code.addEventListener('keydown', e => {
+            if (e.key === 'Enter') joinRoom();
+        });
+        document.getElementById('copy-link-btn').addEventListener('click', copyInviteLink);
+        document.getElementById('switch-team-btn').addEventListener('click', requestTeamSwitch);
+        onlineUI.fillBots.addEventListener('change', () => {
+            online.fillBots = onlineUI.fillBots.checked;
+            syncLobby();
+        });
+        onlineUI.startBtn.addEventListener('click', hostStartMatch);
+        document.getElementById('lobby-leave-btn').addEventListener('click', () => {
+            leaveOnline();
+            showScreen('online');
+        });
+        document.getElementById('leave-match-btn').addEventListener('click', e => {
+            e.stopPropagation();
+            leaveOnline();
+            showScreen('menu');
+        });
+        window.addEventListener('pagehide', () => leaveOnline());
+
+        startNetTicker();
+
+        // Taklif havolasi: ?xona=KOD
+        const invited = Net.normalizeCode(new URLSearchParams(location.search).get('xona'));
+        if (invited) {
+            onlineUI.code.value = invited;
+            showScreen('online');
+            (onlineUI.name.value ? onlineUI.joinBtn : onlineUI.name).focus();
+        }
     }
 
     // === ZOOM (o'ng tugma) ===
@@ -1308,12 +1932,13 @@
             return;
         }
 
-        const p = players[0];
+        const p = me;
+        const frames = dt * 60; // tezlik monitor chastotasiga bog'liq bo'lmasin
 
         // === Player movement ===
         if (p && p.alive) {
             const isSlow = keys['ShiftLeft'] || keys['ShiftRight'];
-            const spd = isSlow ? SLOW_SPEED : MOVE_SPEED;
+            const spd = (isSlow ? SLOW_SPEED : MOVE_SPEED) * frames;
             let moveX = 0, moveZ = 0;
 
             // Kamera -Z tomonga qaraydi: oldinga = (-sin, -cos), o'ngga = (cos, -sin)
@@ -1340,8 +1965,8 @@
                 playerVelocityY = JUMP_FORCE;
                 playerOnGround = false;
             }
-            playerVelocityY -= GRAVITY;
-            p.y += playerVelocityY;
+            playerVelocityY -= GRAVITY * frames;
+            p.y += playerVelocityY * frames;
             if (p.y <= EYE_HEIGHT) {
                 p.y = EYE_HEIGHT;
                 playerVelocityY = 0;
@@ -1384,21 +2009,17 @@
                     gunGroup.position.x += (baseX - gunGroup.position.x) * 0.25;
                 }
             }
-        } else if (p && !p.alive) {
-            // Respawn
-            p.respawnTimer -= dt * 1000;
-            if (p.respawnTimer <= 0) {
-                p.reset(CT_SPAWNS[0].col, CT_SPAWNS[0].row);
-                camera.position.set(p.x, p.y, p.z);
-                updateHUD();
-            }
         }
 
         updateZoom(p && p.alive && aimDown && pointerLocked);
 
-        // Update bots
-        for (const bot of players) {
-            if (bot.isBot) updateBot(bot, dt);
+        // Yashirin tabda bu sikl to'xtaydi: xona egasi uchun netTick davom ettiradi
+        if (!isClient() && !(isHost() && document.hidden)) simulate(dt);
+
+        for (const other of players) {
+            if (other === me) continue;
+            if (online && !(isHost() && other.isBot)) smoothRemotePlayer(other, dt);
+            updatePlayerMesh(other);
         }
 
         // Update effects
@@ -1445,12 +2066,21 @@
     function init() {
         setupInput();
         setupTeamPickers();
+        setupOnline();
 
         document.getElementById('play-btn').addEventListener('click', startGame);
         document.getElementById('controls-btn').addEventListener('click', () => showScreen('controls'));
         document.getElementById('back-btn').addEventListener('click', () => showScreen('menu'));
-        document.getElementById('restart-btn').addEventListener('click', startGame);
+        document.getElementById('restart-btn').addEventListener('click', () => {
+            if (isHost()) hostReturnToLobby();
+            else startGame();
+        });
         document.getElementById('menu-btn').addEventListener('click', () => {
+            if (online) {
+                leaveOnline();
+                showScreen('menu');
+                return;
+            }
             gameState = 'menu';
             document.exitPointerLock?.();
             clearInterval(roundTimerInterval);
